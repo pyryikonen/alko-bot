@@ -220,7 +220,7 @@ class AlkoScraper:
                 return None
 
             cleaned_text = DATE_IN_TEXT_RE.sub(" ", chunk)
-            logger.info("Timetable snippet for %s: %r", entry_date.isoformat(), chunk)
+            logger.debug("Timetable snippet for %s: %r", entry_date.isoformat(), chunk)
 
             if is_closed(cleaned_text):
                 return entry_date, {"closed": True, "note": "", "source": chunk}
@@ -273,7 +273,7 @@ class AlkoScraper:
                 pass
 
             texts = await self._extract_text_chunks(page, selector="main, article")
-            logger.info("Exception page sample: %s", texts[:40])
+            logger.debug("Exception page sample: %s", texts[:40])
 
             return self._find_exception(texts, target)
         finally:
@@ -295,7 +295,7 @@ class AlkoScraper:
             if not any(re.search(p, text) for p in day_pats):
                 continue
 
-            logger.info("Exception line matched: %r", text)
+            logger.debug("Exception line matched: %r", text)
             lower = text.lower()
 
             # "open like <weekday>" → map to default weekday hours

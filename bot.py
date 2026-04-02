@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from telegram import Update, BotCommand
+from telegram.helpers import escape_markdown
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from scraper import AlkoScraper
@@ -26,11 +27,18 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("playwright").setLevel(logging.WARNING)
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "TELEGRAM_BOT_TOKEN ei ole asetettu! "
+    )
 
 HELSINKI_TZ = ZoneInfo("Europe/Helsinki")
 WEEK_CACHE_REFRESH_HOUR = 4
 WEEK_CACHE_REFRESH_MINUTE = 0
+RATE_LIMIT_SECONDS = 10
+MAX_PAST_DAYS = 14
+MAX_FUTURE_DAYS = 14
 
 
 def helsinki_now() -> datetime:
@@ -48,6 +56,7 @@ _WEEK_CACHE: list[dict] | None = None
 _WEEK_CACHE_AT: datetime | None = None
 _WEEK_CACHE_DAY: date | None = None
 _WEEK_CACHE_REFRESH_TASK: asyncio.Task | None = None
+_USER_LAST_COMMAND_AT: dict[int, datetime] = {}
 
 
 def _ensure_cache_day() -> None:
@@ -152,6 +161,43 @@ async def _week_cache_refresh_loop() -> None:
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+def _escape_note(note: str) -> str:
+    return escape_markdown(str(note), version=1)
+
+
+async def _is_rate_limited(update: Update) -> bool:
+    user = update.effective_user
+    message = update.message
+    if user is None:
+        return False
+
+    now = helsinki_now()
+    last = _USER_LAST_COMMAND_AT.get(user.id)
+    if last is not None:
+        elapsed = (now - last).total_seconds()
+        if elapsed < RATE_LIMIT_SECONDS:
+            retry_after = max(1, int(RATE_LIMIT_SECONDS - elapsed))
+            if message:
+                await message.reply_text(
+                    f"Liian monta pyyntoa. Odota {retry_after} sekuntia ennen seuraavaa komentoa."
+                )
+            return True
+
+    _USER_LAST_COMMAND_AT[user.id] = now
+    if len(_USER_LAST_COMMAND_AT) > 2000:
+        cutoff = now - timedelta(hours=1)
+        stale_ids = [uid for uid, ts in _USER_LAST_COMMAND_AT.items() if ts < cutoff]
+        for uid in stale_ids:
+            _USER_LAST_COMMAND_AT.pop(uid, None)
+    return False
+
+
+def _date_in_allowed_range(target: date) -> bool:
+    today = helsinki_today()
+    min_allowed = today - timedelta(days=MAX_PAST_DAYS)
+    max_allowed = today + timedelta(days=MAX_FUTURE_DAYS)
+    return min_allowed <= target <= max_allowed
+
 def format_hours_message(info: dict, target_date: date) -> str:
     weekdays_fi = [
         "Maanantai", "Tiistai", "Keskiviikko",
@@ -161,7 +207,7 @@ def format_hours_message(info: dict, target_date: date) -> str:
     date_str = target_date.strftime("%d.%m.%Y")
 
     if info.get("closed"):
-        note = info.get("note", "")
+        note = _escape_note(info.get("note", ""))
         msg = (
             f"🏪 *Alko Tampere Sokos – Aukioloaika*\n"
             f"📅 {day_name} {date_str}\n\n"
@@ -173,7 +219,7 @@ def format_hours_message(info: dict, target_date: date) -> str:
 
     open_time  = info.get("open",  "?")
     close_time = info.get("close", "?")
-    note       = info.get("note",  "")
+    note       = _escape_note(info.get("note",  ""))
 
     lines = [
         "🏪 *Alko Tampere Sokos – Aukioloaika*",
@@ -214,7 +260,7 @@ def format_week_message(hours_list: list[dict]) -> str:
 
         note = info.get("note", "")
         if note:
-            lines.append(f"_{note}_")
+            lines.append(f"_{_escape_note(note)}_")
 
     return "\n".join(lines)
 
@@ -241,6 +287,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def auki(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _is_rate_limited(update):
+        return
+
     if context.args:
         raw = context.args[0].strip()
         try:
@@ -252,6 +301,15 @@ async def auki(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
     else:
         target = helsinki_today()
+
+    if not _date_in_allowed_range(target):
+        today = helsinki_today()
+        min_allowed = (today - timedelta(days=MAX_PAST_DAYS)).strftime("%d.%m.%Y")
+        max_allowed = (today + timedelta(days=MAX_FUTURE_DAYS)).strftime("%d.%m.%Y")
+        await update.message.reply_text(
+            f"Paivamaara ei ole sallittu. Kayta valia {min_allowed} - {max_allowed}."
+        )
+        return
 
     await _send_hours_for_date(update, target)
 
@@ -285,14 +343,21 @@ async def _send_hours_for_date(update: Update, target: date) -> None:
 
 
 async def huomenna(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _is_rate_limited(update):
+        return
     await _send_hours_for_date(update, helsinki_today() + timedelta(days=1))
 
 async def tanaan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _is_rate_limited(update):
+        return
     await _send_hours_for_date(update, helsinki_today())
 
 async def viikko(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Get the current week's opening hours from the scraper."""
     global _WEEK_CACHE, _WEEK_CACHE_AT, _WEEK_CACHE_DAY
+
+    if await _is_rate_limited(update):
+        return
 
     _ensure_cache_day()
     if _week_cache_valid():
@@ -355,12 +420,6 @@ async def post_init(application: Application) -> None:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    if not BOT_TOKEN:
-        raise ValueError(
-            "TELEGRAM_BOT_TOKEN ei ole asetettu! "
-            "Lisaa se .env-tiedostoon tai ymparistomuuttujiin."
-        )
-
     app = (
         Application.builder()
         .token(BOT_TOKEN)

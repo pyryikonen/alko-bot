@@ -45,6 +45,11 @@ Tai luo `.env`-tiedosto projektin juureen:
 TELEGRAM_BOT_TOKEN=sinun-token-tähän
 ```
 
+Turvallisuus:
+- `.env` on rajattu pois gitista tiedostossa `.gitignore`.
+- ALA koskaan commitoi oikeaa bot tokenia.
+- Jos token on vuotanut tai ollut commitissa, vaihda se heti BotFatherilla.
+
 Jos käytät `.env`-tiedostoa, asenna `python-dotenv` ja lisää tämä `bot.py`:n alkuun:
 ```python
 from dotenv import load_dotenv
@@ -85,14 +90,18 @@ Projektissa on valmis palvelutiedosto [alko-bot.service](alko-bot.service).
 1. Päivitä tiedostoon oma käyttäjä ja polut:
 	- `User=youruser`
 	- `WorkingDirectory=/home/youruser/Github/alko-bot`
-	- `EnvironmentFile=/home/youruser/Github/alko-bot/.env`
+	- `EnvironmentFile=/etc/alko-bot/secrets.env`
 	- `ExecStart=/home/youruser/Github/alko-bot/.venv/bin/python /home/youruser/Github/alko-bot/bot.py`
 
-2. Luo `.env` projektin juureen:
+2. Luo salaisuustiedosto palvelimelle:
 
-```env
-TELEGRAM_BOT_TOKEN=sinun-token-tähän
+```bash
+sudo mkdir -p /etc/alko-bot
+sudo sh -c 'printf "TELEGRAM_BOT_TOKEN=sinun-token-tahan\n" > /etc/alko-bot/secrets.env'
+sudo chmod 600 /etc/alko-bot/secrets.env
 ```
+
+Vaihtoehtoisesti voit kayttaa projektin `.env`-tiedostoa paikallisessa ajossa, mutta tuotannossa suositus on erillinen juurihakemiston ulkopuolinen secrets-tiedosto.
 
 3. Ota palvelu käyttöön Ubuntussa:
 
@@ -102,6 +111,21 @@ sudo systemctl daemon-reload
 sudo systemctl enable alko-bot
 sudo systemctl start alko-bot
 sudo systemctl status alko-bot
+```
+
+### Proxy-ymparisto (tarvittaessa)
+
+Jos palvelin on yritysverkon proxyssa, Playwrightin yhteys voi epaonnistua ilman proxy-asetuksia. Aseta silloin `HTTPS_PROXY` (ja tarvittaessa `HTTP_PROXY`) samaan EnvironmentFileen kuin bot token.
+
+```env
+TELEGRAM_BOT_TOKEN=sinun-token-tähän
+HTTPS_PROXY=http://proxy.example.local:8080
+```
+
+### Esimerkki paikallisesta `.env` tiedostosta
+
+```env
+TELEGRAM_BOT_TOKEN=sinun-token-tähän
 ```
 
 Palvelun käynnistyessä RAM-muistiin tallennettu cache tyhjenee, joten botti lämmittää sen uudelleen käynnistyksen yhteydessä.
