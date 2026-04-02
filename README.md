@@ -11,6 +11,10 @@ Telegram-botti joka hakee Alkon aukioloajat suoraan alko.fi-sivustolta Playwrigh
 | `/auki 24.12.2025` | Aukioloajat valittuna päivänä (muoto pp.kk.vvvv) |
 | `/viikko` | Tämän viikon aukioloajat |
 | `/huomenna` | Huomisen aukioloajat |
+| `/top` | Parhaat drinkit hinnan ja etanolilitran mukaan |
+| `/cheap` | Halvimmat drinkit |
+| `/strong` | Vahvimmat drinkit |
+| `/random` | Drink of the day |
 
 ## Asennus
 
@@ -73,31 +77,63 @@ alko-bot/
 3. Jos poikkeusta ei löydy, haetaan **normaali viikoittainen aukioloaika** kyseiselle viikonpäivälle
 4. Viimeinen varasuunnitelma on sisäänrakennettu taulukko normaaleista aukioloajoista
 
-## Ajastaminen palvelimella (systemd)
+## Ajastaminen palvelimella (Ubuntu + systemd)
 
-Luo tiedosto `/etc/systemd/system/alko-bot.service`:
+Projektissa on valmis palvelutiedosto [alko-bot.service](alko-bot.service).
 
-```ini
-[Unit]
-Description=Alko Telegram Bot
-After=network.target
+1. Päivitä tiedostoon oma käyttäjä ja polut:
+	- `User=youruser`
+	- `WorkingDirectory=/home/youruser/Github/alko-bot`
+	- `EnvironmentFile=/home/youruser/Github/alko-bot/.env`
+	- `ExecStart=/home/youruser/Github/alko-bot/.venv/bin/python /home/youruser/Github/alko-bot/bot.py`
 
-[Service]
-Type=simple
-User=youruser
-WorkingDirectory=/path/to/alko-bot
-Environment=TELEGRAM_BOT_TOKEN=sinun-token-tähän
-ExecStart=/usr/bin/python3 /path/to/alko-bot/bot.py
-Restart=on-failure
-RestartSec=10
+2. Luo `.env` projektin juureen:
 
-[Install]
-WantedBy=multi-user.target
+```env
+TELEGRAM_BOT_TOKEN=sinun-token-tähän
 ```
 
+3. Ota palvelu käyttöön Ubuntussa:
+
 ```bash
+sudo cp alko-bot.service /etc/systemd/system/alko-bot.service
 sudo systemctl daemon-reload
 sudo systemctl enable alko-bot
 sudo systemctl start alko-bot
 sudo systemctl status alko-bot
+```
+
+### Palvelun hallinta ja lokit (Linux)
+
+```bash
+# Käynnistä / pysäytä / uudelleenkäynnistä
+sudo systemctl start alko-bot
+sudo systemctl stop alko-bot
+sudo systemctl restart alko-bot
+
+# Käynnistyykö automaattisesti bootissa
+sudo systemctl enable alko-bot
+sudo systemctl disable alko-bot
+
+# Tila ja prosessi
+sudo systemctl status alko-bot
+sudo systemctl show -p MainPID,SubState,ActiveState alko-bot
+
+# Lokit
+sudo journalctl -u alko-bot -f                 # live-loki
+sudo journalctl -u alko-bot -n 200 --no-pager # viimeiset 200 riviä
+sudo journalctl -u alko-bot -b                # nykyinen boot
+```
+
+### Vaikuttaako koodimuutos heti käynnissä olevaan bottiin?
+
+Ei yleensä. Käynnissä oleva prosessi käyttää käynnistyshetkellä ladattua koodia.
+
+- Muutit `bot.py` / `scraper.py` -> aja `sudo systemctl restart alko-bot`
+- Muutit `.env` -> aja `sudo systemctl restart alko-bot`
+- Muutit `alko-bot.service` -> aja ensin:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart alko-bot
 ```

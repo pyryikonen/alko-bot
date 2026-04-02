@@ -19,7 +19,8 @@ Logic:
 
 import re
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
@@ -57,6 +58,12 @@ OPEN_LIKE_RE = re.compile(
     r".{0,50}(aukioloaiko|mukaisesti|tavoin)",
     re.IGNORECASE,
 )
+
+HELSINKI_TZ = ZoneInfo("Europe/Helsinki")
+
+
+def helsinki_today() -> date:
+    return datetime.now(HELSINKI_TZ).date()
 
 
 def parse_time_range(text: str) -> Optional[tuple[str, str]]:
@@ -140,18 +147,18 @@ class AlkoScraper:
             page = await ctx.new_page()
             try:
                 try:
-                    await page.goto(STORE_URL, wait_until="commit", timeout=15_000)
+                    await page.goto(STORE_URL, wait_until="domcontentloaded", timeout=12_000)
                 except PlaywrightTimeoutError:
                     logger.warning("Week store navigation timed out; continuing with partial load")
                 try:
                     await page.wait_for_selector("main, .store, table, li", timeout=10_000)
                 except Exception:
                     pass
-                await page.wait_for_timeout(3500)
 
-                texts = await page.eval_on_selector_all(
-                    "*",
-                    "els => els.map(e => e.innerText ? e.innerText.trim() : '').filter(t => t.length > 0)"
+                texts = await self._extract_text_chunks(
+                    page,
+                    start_markers=("Aukioloajat",),
+                    end_markers=("Myymälä kartalla", "TUTUSTU MYYMÄLÄN VALIKOIMAAN", "Alko Oy", "© Alko"),
                 )
                 logger.info("Week page sample: %s", texts[:20])
 
@@ -170,19 +177,18 @@ class AlkoScraper:
         page = await ctx.new_page()
         try:
             try:
-                await page.goto(STORE_URL, wait_until="commit", timeout=15_000)
+                await page.goto(STORE_URL, wait_until="domcontentloaded", timeout=12_000)
             except PlaywrightTimeoutError:
                 logger.warning("Store navigation timed out; continuing with partial load")
             try:
                 await page.wait_for_selector("main, .store, table, li", timeout=10_000)
             except Exception:
                 pass
-            await page.wait_for_timeout(3500)
 
-            # Grab all text nodes
-            texts = await page.eval_on_selector_all(
-                "*",
-                "els => els.map(e => e.innerText ? e.innerText.trim() : '').filter(t => t.length > 0)"
+            texts = await self._extract_text_chunks(
+                page,
+                start_markers=("Aukioloajat",),
+                end_markers=("Myymälä kartalla", "TUTUSTU MYYMÄLÄN VALIKOIMAAN", "Alko Oy", "© Alko"),
             )
             logger.info("Store page raw sample: %s", texts[:60])
 
@@ -210,16 +216,20 @@ class AlkoScraper:
         from it and its immediate neighbours.
         """
         result: dict[date, dict] = {}
-        today = date.today()
+        today = helsinki_today()
 
+        lines: list[str] = []
         for text in texts:
             if len(text) > 200:
                 continue
-
             normalized = re.sub(r"\s+", " ", text).strip()
-            matches = list(DATE_IN_TEXT_RE.finditer(normalized))
+            if normalized:
+                lines.append(normalized)
+
+        def parse_entry(chunk: str) -> Optional[tuple[date, dict]]:
+            matches = list(DATE_IN_TEXT_RE.finditer(chunk))
             if len(matches) != 1:
-                continue
+                return None
 
             m = matches[0]
             day_n = int(m.group(1))
@@ -227,23 +237,52 @@ class AlkoScraper:
             year_n = int(m.group(3)) if m.group(3) else today.year
 
             try:
-                d = date(year_n, month_n, day_n)
+                entry_date = date(year_n, month_n, day_n)
             except ValueError:
-                continue
+                return None
 
-            if abs((d - today).days) > 14:
-                continue
+            if abs((entry_date - today).days) > 14:
+                return None
 
-            ctx_text = normalized
-            cleaned_text = DATE_IN_TEXT_RE.sub(" ", normalized)
-            logger.info("Timetable snippet for %s: %r", d.isoformat(), ctx_text)
+            cleaned_text = DATE_IN_TEXT_RE.sub(" ", chunk)
+            logger.info("Timetable snippet for %s: %r", entry_date.isoformat(), chunk)
 
             if is_closed(cleaned_text):
-                result[d] = {"closed": True, "note": "", "source": ctx_text}
-            else:
-                times = parse_time_range(cleaned_text)
-                if times:
-                    result[d] = {"open": times[0], "close": times[1], "note": "", "source": ctx_text}
+                return entry_date, {"closed": True, "note": "", "source": chunk}
+
+            times = parse_time_range(cleaned_text)
+            if times:
+                return entry_date, {"open": times[0], "close": times[1], "note": "", "source": chunk}
+
+            return None
+
+        # First pass: handle compact snippets that already include weekday/date/hour text.
+        for text in lines:
+            parsed = parse_entry(text)
+            if parsed is not None:
+                d, info = parsed
+                result[d] = info
+
+        # Second pass: handle the actual page layout where weekday, date and hours
+        # are rendered as separate consecutive lines.
+        weekday_names = set(WEEKDAY_NAMES_FI)
+        for idx in range(len(lines) - 2):
+            weekday_line = lines[idx].lower()
+            date_line = lines[idx + 1]
+            hours_line = lines[idx + 2]
+
+            if weekday_line not in weekday_names:
+                continue
+            if not DATE_IN_TEXT_RE.fullmatch(date_line):
+                continue
+
+            combined = f"{weekday_line} {date_line} {hours_line}"
+            parsed = parse_entry(combined)
+            if parsed is None:
+                continue
+
+            d, info = parsed
+            result.setdefault(d, info)
 
         return result
 
@@ -257,12 +296,8 @@ class AlkoScraper:
                 await page.wait_for_selector("main, article, li, p", timeout=10_000)
             except Exception:
                 pass
-            await page.wait_for_timeout(2000)
 
-            texts = await page.eval_on_selector_all(
-                "p, li, td, span",
-                "els => els.map(e => e.innerText.trim()).filter(t => t.length > 2)"
-            )
+            texts = await self._extract_text_chunks(page, selector="main, article")
             logger.info("Exception page sample: %s", texts[:40])
 
             return self._find_exception(texts, target, store_hours)
@@ -298,7 +333,6 @@ class AlkoScraper:
                 note = text[:160]
                 if ref_weekday is not None:
                     # Try to get that weekday's hours from the timetable we already scraped
-                    ref_date = self._nearest_weekday(ref_weekday)
                     if store_hours is None:
                         pass  # will fall through to fallback
                     # We don't have a timetable dict here — use fallback
@@ -338,9 +372,49 @@ class AlkoScraper:
         return text
 
     def _nearest_weekday(self, weekday: int) -> date:
-        today = date.today()
+        today = helsinki_today()
         delta = (weekday - today.weekday()) % 7
         return today + timedelta(days=delta)
+
+    async def _extract_text_chunks(
+        self,
+        page: Page,
+        selector: str = "main, body",
+        start_markers: tuple[str, ...] = (),
+        end_markers: tuple[str, ...] = (),
+    ) -> list[str]:
+        """Fast text extraction without traversing every DOM node."""
+        text = ""
+
+        for sel in [s.strip() for s in selector.split(",")]:
+            loc = page.locator(sel).first
+            if await loc.count() == 0:
+                continue
+            try:
+                candidate = await loc.inner_text(timeout=4000)
+                if candidate and candidate.strip():
+                    text = candidate
+                    break
+            except Exception:
+                continue
+
+        if not text:
+            body = page.locator("body").first
+            if await body.count() > 0:
+                text = await body.inner_text(timeout=4000)
+
+        if start_markers:
+            start_index = min((idx for marker in start_markers if (idx := text.find(marker)) != -1), default=-1)
+            if start_index != -1:
+                text = text[start_index:]
+
+        if end_markers:
+            end_index = min((idx for marker in end_markers if (idx := text.find(marker)) != -1), default=-1)
+            if end_index != -1:
+                text = text[:end_index]
+
+        lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines()]
+        return [ln for ln in lines if len(ln) > 1]
 
     def _weekday_fallback(self, weekday: int) -> dict:
         fallback = {
@@ -374,7 +448,7 @@ class AlkoScraper:
     def _week_hours_from_timetable(self, timetable: dict[date, dict]) -> list[dict]:
         """Build a 7-day week view from the parsed store timetable."""
         result: list[dict] = []
-        start = date.today()
+        start = helsinki_today()
 
         for offset in range(7):
             item_date = start + timedelta(days=offset)
