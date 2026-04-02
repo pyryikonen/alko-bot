@@ -9,12 +9,9 @@ Telegram-botti joka hakee Alkon aukioloajat suoraan alko.fi-sivustolta Playwrigh
 | `/help` | Näyttää ohjeet |
 | `/auki` | Tänään voimassa olevat aukioloajat |
 | `/auki 24.12.2025` | Aukioloajat valittuna päivänä (muoto pp.kk.vvvv) |
-| `/viikko` | Tämän viikon aukioloajat |
+| `/tanaan` | Tänään voimassa olevat aukioloajat |
 | `/huomenna` | Huomisen aukioloajat |
-| `/top` | Parhaat drinkit hinnan ja etanolilitran mukaan |
-| `/cheap` | Halvimmat drinkit |
-| `/strong` | Vahvimmat drinkit |
-| `/random` | Drink of the day |
+| `/viikko` | Tämän viikon aukioloajat |
 
 ## Asennus
 
@@ -60,6 +57,8 @@ load_dotenv()
 python bot.py
 ```
 
+Botin week-cache lämpenee käynnistyksessä ja päivittyy automaattisesti joka päivä klo 04:00 Helsingin ajassa.
+
 ## Tiedostorakenne
 
 ```
@@ -76,6 +75,8 @@ alko-bot/
 2. Skripti etsii ensin **poikkeusajat** – juhlapyhät, erikoisaukioloajat – tälle päivälle
 3. Jos poikkeusta ei löydy, haetaan **normaali viikoittainen aukioloaika** kyseiselle viikonpäivälle
 4. Viimeinen varasuunnitelma on sisäänrakennettu taulukko normaaleista aukioloajoista
+
+`/auki`, `/tanaan` ja `/huomenna` käyttävät samaa muistiin ladattua viikon cachea, jos päivän tieto löytyy sieltä. Jos ei löydy, botti hakee yksittäisen päivän tiedot erikseen.
 
 ## Ajastaminen palvelimella (Ubuntu + systemd)
 
@@ -102,6 +103,8 @@ sudo systemctl enable alko-bot
 sudo systemctl start alko-bot
 sudo systemctl status alko-bot
 ```
+
+Palvelun käynnistyessä RAM-muistiin tallennettu cache tyhjenee, joten botti lämmittää sen uudelleen käynnistyksen yhteydessä.
 
 ### Palvelun hallinta ja lokit (Linux)
 
@@ -137,3 +140,7 @@ Ei yleensä. Käynnissä oleva prosessi käyttää käynnistyshetkellä ladattua
 sudo systemctl daemon-reload
 sudo systemctl restart alko-bot
 ```
+
+## Huomio drink-ominaisuuksista
+
+Drink-komennot ovat vielä koodissa kommentoituina, joten niitä ei ole käytössä botin aktiivisissa komennoissa tällä hetkellä.

@@ -67,6 +67,14 @@ def _week_cache_valid() -> bool:
     return _WEEK_CACHE is not None and _WEEK_CACHE_DAY == helsinki_today()
 
 
+def _get_cached_hours_for_date(target: date) -> dict | None:
+    if _week_cache_valid():
+        for info in _WEEK_CACHE or []:
+            if info.get("date") == target:
+                return info
+    return _HOURS_CACHE.get(target)
+
+
 def _week_result_looks_valid(hours_list: list[dict]) -> bool:
     """Avoid caching clearly bad week snapshots."""
     if len(hours_list) != 7:
@@ -228,10 +236,16 @@ async def auki(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         target = helsinki_today()
 
+    await _send_hours_for_date(update, target)
+
+
+async def _send_hours_for_date(update: Update, target: date) -> None:
     _ensure_cache_day()
-    cached = _HOURS_CACHE.get(target)
+
+    cached = _get_cached_hours_for_date(target)
     if cached is not None:
         logger.info("Cache hit for date %s", target.isoformat())
+        _HOURS_CACHE[target] = cached
         text = format_hours_message(cached, target)
         await update.message.reply_text(text, parse_mode="Markdown")
         return
@@ -254,12 +268,10 @@ async def auki(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def huomenna(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.args = [(helsinki_today() + timedelta(days=1)).strftime("%d.%m.%Y")]
-    await auki(update, context)
+    await _send_hours_for_date(update, helsinki_today() + timedelta(days=1))
 
 async def tanaan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.args = [helsinki_today().strftime("%d.%m.%Y")]
-    await auki(update, context)
+    await _send_hours_for_date(update, helsinki_today())
 
 async def viikko(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Get the current week's opening hours from the scraper."""
@@ -303,10 +315,10 @@ async def post_init(application: Application) -> None:
         BotCommand("tanaan",   "Aukioloaika tänään"),
         BotCommand("huomenna", "Huomisen aukioloaika"),
         BotCommand("viikko",   "Viikon aukioloajat"),
-        BotCommand("top",      "Top value drinks"),
-        BotCommand("cheap",    "Cheapest drinks"),
-        BotCommand("strong",   "Strongest drinks"),
-        BotCommand("random",   "Drink of the day"),
+        # BotCommand("top",      "Top value drinks"),
+        # BotCommand("cheap",    "Cheapest drinks"),
+        # BotCommand("strong",   "Strongest drinks"),
+        # BotCommand("random",   "Drink of the day"),
         BotCommand("help",     "Ohjeet"),
     ]
     await application.bot.set_my_commands(commands)
