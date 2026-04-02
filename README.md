@@ -1,109 +1,102 @@
-# 🍷 Alko Telegram Bot
+# Alko Telegram Bot
 
-Telegram-botti joka hakee Alkon aukioloajat suoraan alko.fi-sivustolta Playwrightia käyttäen.
+A Telegram bot that fetches Alko opening hours directly from alko.fi using Playwright.
 
-## Komennot
+## Commands
 
-| Komento | Kuvaus |
+| Command | Description |
 |---|---|
-| `/help` | Näyttää ohjeet |
-| `/auki` | Tänään voimassa olevat aukioloajat |
-| `/auki 24.12.2025` | Aukioloajat valittuna päivänä (muoto pp.kk.vvvv) |
-| `/tanaan` | Tänään voimassa olevat aukioloajat |
-| `/huomenna` | Huomisen aukioloajat |
-| `/viikko` | Tämän viikon aukioloajat |
+| `/help` | Show help |
+| `/auki` | Opening hours for today |
+| `/auki 24.12.2025` | Opening hours for a specific date (format: dd.mm.yyyy) |
+| `/tanaan` | Opening hours for today |
+| `/huomenna` | Opening hours for tomorrow |
+| `/viikko` | Opening hours for the current week |
 
-## Asennus
+## Installation
 
-### 1. Hanki Telegram Bot Token
+### 1. Create a Telegram bot token
 
-1. Avaa Telegram ja etsi **@BotFather**
-2. Lähetä `/newbot` ja seuraa ohjeita
-3. Kopioi saamasi token talteen
+1. Open Telegram and find **@BotFather**.
+2. Send `/newbot` and follow the instructions.
+3. Copy the token.
 
-### 2. Asenna riippuvuudet
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 playwright install chromium
 ```
 
-### 3. Aseta ympäristömuuttuja
+### 3. Configure environment variables
 
-**Linux / macOS:**
+Linux / macOS:
+
 ```bash
-export TELEGRAM_BOT_TOKEN="sinun-token-tähän"
+export TELEGRAM_BOT_TOKEN="your-token-here"
 ```
 
-**Windows (PowerShell):**
+Windows (PowerShell):
+
 ```powershell
-$env:TELEGRAM_BOT_TOKEN = "sinun-token-tähän"
+$env:TELEGRAM_BOT_TOKEN = "your-token-here"
 ```
 
-Tai luo `.env`-tiedosto projektin juureen:
-```
-TELEGRAM_BOT_TOKEN=sinun-token-tähän
-```
+Or create a `.env` file in the project root:
 
-Turvallisuus:
-- `.env` on rajattu pois gitista tiedostossa `.gitignore`.
-- ALA koskaan commitoi oikeaa bot tokenia.
-- Jos token on vuotanut tai ollut commitissa, vaihda se heti BotFatherilla.
-
-Jos käytät `.env`-tiedostoa, asenna `python-dotenv` ja lisää tämä `bot.py`:n alkuun:
-```python
-from dotenv import load_dotenv
-load_dotenv()
+```env
+TELEGRAM_BOT_TOKEN=your-token-here
 ```
 
-### 4. Käynnistä botti
+Security notes:
+- `.env` is excluded by `.gitignore`.
+- Never commit a real bot token.
+- If a token has leaked or has been committed, rotate it immediately in BotFather.
+
+### 4. Start the bot
 
 ```bash
 python bot.py
 ```
 
-Botin week-cache lämpenee käynnistyksessä ja päivittyy automaattisesti joka päivä klo 04:00 Helsingin ajassa.
+The weekly cache is warmed at startup and refreshed automatically every day at 04:00 (Europe/Helsinki).
 
-## Tiedostorakenne
+## Project structure
 
-```
+```text
 alko-bot/
-├── bot.py          # Telegram-botti (komennot ja käsittelijät)
-├── scraper.py      # Playwright-scraper Alkon sivulle
+├── bot.py
+├── scraper.py
 ├── requirements.txt
 └── README.md
 ```
 
-## Miten scraper toimii
+## How scraping works
 
-1. Playwright avaa oikean Chromium-selaimen (headless) ja lataa Alkon aukioloajat-sivun
-2. Skripti etsii ensin **poikkeusajat** – juhlapyhät, erikoisaukioloajat – tälle päivälle
-3. Jos poikkeusta ei löydy, haetaan **normaali viikoittainen aukioloaika** kyseiselle viikonpäivälle
-4. Viimeinen varasuunnitelma on sisäänrakennettu taulukko normaaleista aukioloajoista
+1. Playwright launches headless Chromium and opens Alko pages.
+2. The scraper checks exception/holiday opening hours first.
+3. If no exception is found, it uses the regular weekly opening hours.
+4. Command responses are built from the scraped result and cache.
 
-`/auki`, `/tanaan` ja `/huomenna` käyttävät samaa muistiin ladattua viikon cachea, jos päivän tieto löytyy sieltä. Jos ei löydy, botti hakee yksittäisen päivän tiedot erikseen.
+The `/auki`, `/tanaan`, and `/huomenna` commands use in-memory cache when possible. If the date is not in cache, the bot fetches it directly.
 
-## Ajastaminen palvelimella (Ubuntu + systemd)
+## Run as a service (Ubuntu + systemd)
 
-Projektissa on valmis palvelutiedosto [alko-bot.service](alko-bot.service).
+Use `alko-bot.service` and update these values:
+- `User=youruser`
+- `WorkingDirectory=/home/youruser/Github/alko-bot`
+- `EnvironmentFile=/etc/alko-bot/secrets.env`
+- `ExecStart=/home/youruser/Github/alko-bot/.venv/bin/python /home/youruser/Github/alko-bot/bot.py`
 
-1. Päivitä tiedostoon oma käyttäjä ja polut:
-	- `User=youruser`
-	- `WorkingDirectory=/home/youruser/Github/alko-bot`
-	- `EnvironmentFile=/etc/alko-bot/secrets.env`
-	- `ExecStart=/home/youruser/Github/alko-bot/.venv/bin/python /home/youruser/Github/alko-bot/bot.py`
-
-2. Luo salaisuustiedosto palvelimelle:
+Create a secret file:
 
 ```bash
 sudo mkdir -p /etc/alko-bot
-sudo sh -c 'printf "TELEGRAM_BOT_TOKEN=sinun-token-tahan\n" > /etc/alko-bot/secrets.env'
+sudo sh -c 'printf "TELEGRAM_BOT_TOKEN=your-token-here\n" > /etc/alko-bot/secrets.env'
 sudo chmod 600 /etc/alko-bot/secrets.env
 ```
 
-Vaihtoehtoisesti voit kayttaa projektin `.env`-tiedostoa paikallisessa ajossa, mutta tuotannossa suositus on erillinen juurihakemiston ulkopuolinen secrets-tiedosto.
-
-3. Ota palvelu käyttöön Ubuntussa:
+Enable and start service:
 
 ```bash
 sudo cp alko-bot.service /etc/systemd/system/alko-bot.service
@@ -113,58 +106,34 @@ sudo systemctl start alko-bot
 sudo systemctl status alko-bot
 ```
 
-### Proxy-ymparisto (tarvittaessa)
+### Proxy environment (optional)
 
-Jos palvelin on yritysverkon proxyssa, Playwrightin yhteys voi epaonnistua ilman proxy-asetuksia. Aseta silloin `HTTPS_PROXY` (ja tarvittaessa `HTTP_PROXY`) samaan EnvironmentFileen kuin bot token.
+If the server is behind a corporate proxy, add proxy variables to the same `EnvironmentFile`:
 
 ```env
-TELEGRAM_BOT_TOKEN=sinun-token-tähän
+TELEGRAM_BOT_TOKEN=your-token-here
 HTTPS_PROXY=http://proxy.example.local:8080
+HTTP_PROXY=http://proxy.example.local:8080
 ```
 
-### Esimerkki paikallisesta `.env` tiedostosta
-
-```env
-TELEGRAM_BOT_TOKEN=sinun-token-tähän
-```
-
-Palvelun käynnistyessä RAM-muistiin tallennettu cache tyhjenee, joten botti lämmittää sen uudelleen käynnistyksen yhteydessä.
-
-### Palvelun hallinta ja lokit (Linux)
+### Service management and logs (Linux)
 
 ```bash
-# Käynnistä / pysäytä / uudelleenkäynnistä
+# Start / stop / restart
 sudo systemctl start alko-bot
 sudo systemctl stop alko-bot
 sudo systemctl restart alko-bot
 
-# Käynnistyykö automaattisesti bootissa
+# Enable/disable on boot
 sudo systemctl enable alko-bot
 sudo systemctl disable alko-bot
 
-# Tila ja prosessi
+# Status
 sudo systemctl status alko-bot
 sudo systemctl show -p MainPID,SubState,ActiveState alko-bot
 
-# Lokit
-sudo journalctl -u alko-bot -f                 # live-loki
-sudo journalctl -u alko-bot -n 200 --no-pager # viimeiset 200 riviä
-sudo journalctl -u alko-bot -b                # nykyinen boot
+# Logs
+sudo journalctl -u alko-bot -f
+sudo journalctl -u alko-bot -n 200 --no-pager
+sudo journalctl -u alko-bot -b
 ```
-
-### Vaikuttaako koodimuutos heti käynnissä olevaan bottiin?
-
-Ei yleensä. Käynnissä oleva prosessi käyttää käynnistyshetkellä ladattua koodia.
-
-- Muutit `bot.py` / `scraper.py` -> aja `sudo systemctl restart alko-bot`
-- Muutit `.env` -> aja `sudo systemctl restart alko-bot`
-- Muutit `alko-bot.service` -> aja ensin:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart alko-bot
-```
-
-## Huomio drink-ominaisuuksista
-
-Drink-komennot ovat vielä koodissa kommentoituina, joten niitä ei ole käytössä botin aktiivisissa komennoissa tällä hetkellä.
