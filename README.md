@@ -6,7 +6,7 @@ Telegram-botti joka hakee Alkon aukioloajat suoraan alko.fi-sivustolta Playwrigh
 
 | Komento | Kuvaus |
 |---|---|
-| `/start` tai `/help` | Näyttää ohjeet |
+| `/help` | Näyttää ohjeet |
 | `/auki` | Tänään voimassa olevat aukioloajat |
 | `/auki 24.12.2025` | Aukioloajat valittuna päivänä (muoto pp.kk.vvvv) |
 | `/viikko` | Tämän viikon aukioloajat |

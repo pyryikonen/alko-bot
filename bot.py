@@ -307,7 +307,6 @@ async def post_init(application: Application) -> None:
         BotCommand("cheap",    "Cheapest drinks"),
         BotCommand("strong",   "Strongest drinks"),
         BotCommand("random",   "Drink of the day"),
-        BotCommand("start",    "Ohjeet"),
         BotCommand("help",     "Ohjeet"),
     ]
     await application.bot.set_my_commands(commands)
@@ -339,7 +338,6 @@ def main() -> None:
         .build()
     )
 
-    app.add_handler(CommandHandler("start",    start))
     app.add_handler(CommandHandler("help",     start))
     app.add_handler(CommandHandler("auki",     auki))
     app.add_handler(CommandHandler("tanaan",   tanaan))
