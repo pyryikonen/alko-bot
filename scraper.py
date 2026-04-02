@@ -40,9 +40,6 @@ WEEKDAY_NAMES_FI = [
     "sunnuntai",   # 6  su
 ]
 
-# Short 2-letter prefixes used on the page (totorstai, peperjantai, …)
-WEEKDAY_SHORT = ["ma", "ti", "ke", "to", "pe", "la", "su"]
-
 CLOSED_KEYWORDS = ["suljettu", "kiinni", "closed", "ei auki"]
 
 # Time patterns: "9–18", "9:00–18:00", "9.00–18.00", "klo 9–18"
@@ -86,6 +83,17 @@ class AlkoScraper:
         self._playwright = None
         self._browser    = None
 
+    async def _new_store_context(self):
+        return await self._browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            locale="fi-FI",
+            timezone_id="Europe/Helsinki",
+        )
+
     async def __aenter__(self):
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
@@ -103,22 +111,14 @@ class AlkoScraper:
     # ── public ────────────────────────────────────────────────────────────────
 
     async def get_hours(self, target: date) -> dict:
-        ctx = await self._browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            locale="fi-FI",
-            timezone_id="Europe/Helsinki",
-        )
+        ctx = await self._new_store_context()
         try:
             # ── 1. Scrape store timetable ──────────────────────────────────
             store_hours = await self._scrape_store(ctx, target)
             logger.info("Store timetable result: %s", store_hours)
 
             # ── 2. Scrape exceptions ───────────────────────────────────────
-            exception = await self._scrape_exception(ctx, target, store_hours)
+            exception = await self._scrape_exception(ctx, target)
             logger.info("Exception result: %s", exception)
 
             if exception is not None:
@@ -132,40 +132,24 @@ class AlkoScraper:
         finally:
             await ctx.close()
 
-    async def get_week_hours(self) -> list[dict]:
-        """Scrape the current week's opening hours from the store timetable."""
-        ctx = await self._browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            locale="fi-FI",
-            timezone_id="Europe/Helsinki",
-        )
+    async def get_week_timetable(self) -> dict[date, dict]:
+        """Scrape the visible weekly timetable as a date->hours map."""
+        ctx = await self._new_store_context()
         try:
             page = await ctx.new_page()
             try:
                 try:
                     await page.goto(STORE_URL, wait_until="domcontentloaded", timeout=12_000)
                 except PlaywrightTimeoutError:
-                    logger.warning("Week store navigation timed out; continuing with partial load")
+                    logger.warning("Week timetable navigation timed out; continuing with partial load")
                 try:
                     await page.wait_for_selector("main, .store, table, li", timeout=10_000)
                 except Exception:
                     pass
 
-                texts = await self._extract_text_chunks(
-                    page,
-                    start_markers=("Aukioloajat",),
-                    end_markers=("Myymälä kartalla", "TUTUSTU MYYMÄLÄN VALIKOIMAAN", "Alko Oy", "© Alko"),
-                )
-                logger.info("Week page sample: %s", texts[:20])
-
-                timetable = self._parse_timetable(texts)
-                logger.info("Week timetable parsed: %s", timetable)
-
-                return self._week_hours_from_timetable(timetable)
+                timetable = await self._scrape_visible_week_timetables(page)
+                logger.info("Parsed week timetable entries: %d", len(timetable))
+                return timetable
             finally:
                 await page.close()
         finally:
@@ -185,16 +169,7 @@ class AlkoScraper:
             except Exception:
                 pass
 
-            texts = await self._extract_text_chunks(
-                page,
-                start_markers=("Aukioloajat",),
-                end_markers=("Myymälä kartalla", "TUTUSTU MYYMÄLÄN VALIKOIMAAN", "Alko Oy", "© Alko"),
-            )
-            logger.info("Store page raw sample: %s", texts[:60])
-
-            # Parse the 7-day timetable entries.
-            # Format seen in search results: "totorstai02.04.9–18" or separate nodes
-            timetable = self._parse_timetable(texts)
+            timetable = await self._scrape_visible_week_timetables(page)
             logger.info("Parsed timetable: %s", timetable)
 
             return timetable.get(target)
@@ -288,7 +263,7 @@ class AlkoScraper:
 
     # ── exceptions page ───────────────────────────────────────────────────────
 
-    async def _scrape_exception(self, ctx, target: date, store_hours: Optional[dict]) -> Optional[dict]:
+    async def _scrape_exception(self, ctx, target: date) -> Optional[dict]:
         page = await ctx.new_page()
         try:
             await page.goto(EXCEPTION_URL, wait_until="domcontentloaded", timeout=30_000)
@@ -300,11 +275,11 @@ class AlkoScraper:
             texts = await self._extract_text_chunks(page, selector="main, article")
             logger.info("Exception page sample: %s", texts[:40])
 
-            return self._find_exception(texts, target, store_hours)
+            return self._find_exception(texts, target)
         finally:
             await page.close()
 
-    def _find_exception(self, texts: list[str], target: date, store_hours: Optional[dict]) -> Optional[dict]:
+    def _find_exception(self, texts: list[str], target: date) -> Optional[dict]:
         """
         Look for a line on the exceptions page that mentions the target date.
         Exception always wins over the store timetable.
@@ -323,7 +298,7 @@ class AlkoScraper:
             logger.info("Exception line matched: %r", text)
             lower = text.lower()
 
-            # "open like <weekday>" → look up that weekday from store hours or fallback
+            # "open like <weekday>" → map to default weekday hours
             like = OPEN_LIKE_RE.search(lower)
             if like:
                 ref_name = like.group(1).lower()
@@ -332,10 +307,6 @@ class AlkoScraper:
                 )
                 note = text[:160]
                 if ref_weekday is not None:
-                    # Try to get that weekday's hours from the timetable we already scraped
-                    if store_hours is None:
-                        pass  # will fall through to fallback
-                    # We don't have a timetable dict here — use fallback
                     fb = self._weekday_fallback(ref_weekday)
                     fb["note"] = note
                     return fb
@@ -370,11 +341,6 @@ class AlkoScraper:
             if any(re.search(p, part) for p in pats):
                 return part.strip()
         return text
-
-    def _nearest_weekday(self, weekday: int) -> date:
-        today = helsinki_today()
-        delta = (weekday - today.weekday()) % 7
-        return today + timedelta(days=delta)
 
     async def _extract_text_chunks(
         self,
@@ -416,6 +382,76 @@ class AlkoScraper:
         lines = [re.sub(r"\s+", " ", ln).strip() for ln in text.splitlines()]
         return [ln for ln in lines if len(ln) > 1]
 
+    async def _extract_opening_hours_lines(self, page: Page) -> list[str]:
+        """Prefer the structured list items in the opening-hours section."""
+        selectors = (
+            "ul[aria-labelledby*='openingHours'] li",
+            "section[id='openingHours'] li",
+            "main ul li",
+        )
+
+        for selector in selectors:
+            locator = page.locator(selector)
+            try:
+                count = await locator.count()
+            except Exception:
+                continue
+
+            if count == 0:
+                continue
+
+            lines: list[str] = []
+            for index in range(count):
+                try:
+                    text = await locator.nth(index).inner_text(timeout=3000)
+                except Exception:
+                    continue
+                normalized = re.sub(r"\s+", " ", text).strip()
+                if normalized:
+                    lines.append(normalized)
+
+            if lines:
+                return lines
+
+        return await self._extract_text_chunks(
+            page,
+            start_markers=("Aukioloajat",),
+            end_markers=("Myymälä kartalla", "TUTUSTU MYYMÄLÄN VALIKOIMAAN", "Alko Oy", "© Alko"),
+        )
+
+    async def _scrape_visible_week_timetables(self, page: Page) -> dict[date, dict]:
+        """Scrape the currently visible week, then click to the next week and merge both."""
+        timetable: dict[date, dict] = {}
+
+        current_lines = await self._extract_opening_hours_lines(page)
+        logger.info("Opening-hours lines (current week): %s", current_lines[:20])
+        timetable.update(self._parse_timetable(current_lines))
+
+        next_week_button = page.get_by_role("button", name=re.compile(r"Näytä seuraava viikko", re.IGNORECASE))
+        try:
+            if await next_week_button.count() > 0:
+                await next_week_button.first.click()
+                try:
+                    await page.wait_for_function(
+                        """
+                        () => {
+                            const heading = document.querySelector('#openingHoursCurrent');
+                            return heading && /ensi viikko/i.test(heading.textContent || '');
+                        }
+                        """,
+                        timeout=10_000,
+                    )
+                except Exception:
+                    pass
+
+                next_lines = await self._extract_opening_hours_lines(page)
+                logger.info("Opening-hours lines (next week): %s", next_lines[:20])
+                timetable.update(self._parse_timetable(next_lines))
+        except Exception:
+            logger.exception("Failed to switch store timetable to next week")
+
+        return timetable
+
     def _weekday_fallback(self, weekday: int) -> dict:
         fallback = {
             0: ("09:00", "21:00"),
@@ -435,17 +471,7 @@ class AlkoScraper:
             "note":  "⚠️ Oletustieto – tarkista poikkeukset alko.fi:stä.",
         }
 
-    def _fallback_week_hours(self, start: date) -> list[dict]:
-        """Build a 7-day fallback list from the weekday defaults."""
-        result: list[dict] = []
-        for offset in range(7):
-            item_date = start + timedelta(days=offset)
-            fallback = self._weekday_fallback(item_date.weekday()).copy()
-            fallback["date"] = item_date
-            result.append(fallback)
-        return result
-
-    def _week_hours_from_timetable(self, timetable: dict[date, dict]) -> list[dict]:
+    def week_hours_from_timetable(self, timetable: dict[date, dict]) -> list[dict]:
         """Build a 7-day week view from the parsed store timetable."""
         result: list[dict] = []
         start = helsinki_today()

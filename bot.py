@@ -27,7 +27,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("playwright").setLevel(logging.WARNING)
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-ALKOMAHOLI_BASE_URL = os.environ.get("ALKOMAHOLI_API_BASE_URL", "http://127.0.0.1:8080")
 
 HELSINKI_TZ = ZoneInfo("Europe/Helsinki")
 WEEK_CACHE_REFRESH_HOUR = 4
@@ -56,23 +55,38 @@ def _ensure_cache_day() -> None:
     today = helsinki_today()
     if _CACHE_DAY != today:
         _CACHE_DAY = today
-        _HOURS_CACHE = {}
+        _HOURS_CACHE = {cached_date: info for cached_date, info in _HOURS_CACHE.items() if cached_date >= today}
         _WEEK_CACHE = None
         _WEEK_CACHE_AT = None
         _WEEK_CACHE_DAY = None
-        logger.info("Cache reset for new day: %s", today.isoformat())
+        logger.info("Cache rolled to new day %s; retained %d future cached entries", today.isoformat(), len(_HOURS_CACHE))
 
 
 def _week_cache_valid() -> bool:
     return _WEEK_CACHE is not None and _WEEK_CACHE_DAY == helsinki_today()
 
 
-def _get_cached_hours_for_date(target: date) -> dict | None:
+def _get_cached_hours_for_date(target: date) -> tuple[dict | None, str | None]:
     if _week_cache_valid():
         for info in _WEEK_CACHE or []:
             if info.get("date") == target:
-                return info
-    return _HOURS_CACHE.get(target)
+                return info, "week cache"
+
+    info = _HOURS_CACHE.get(target)
+    if info is not None:
+        return info, "day cache"
+
+    return None, None
+
+
+def _store_hours_cache(entries: dict[date, dict]) -> int:
+    stored = 0
+    for cached_date, info in entries.items():
+        if info is None:
+            continue
+        _HOURS_CACHE[cached_date] = info.copy()
+        stored += 1
+    return stored
 
 
 def _week_result_looks_valid(hours_list: list[dict]) -> bool:
@@ -107,7 +121,8 @@ async def refresh_week_cache() -> bool:
 
     try:
         async with AlkoScraper() as scraper:
-            hours_list = await scraper.get_week_hours()
+            timetable = await scraper.get_week_timetable()
+            hours_list = scraper.week_hours_from_timetable(timetable)
     except Exception:
         logger.exception("Week cache refresh failed")
         return False
@@ -116,7 +131,9 @@ async def refresh_week_cache() -> bool:
         _WEEK_CACHE = hours_list
         _WEEK_CACHE_AT = helsinki_now()
         _WEEK_CACHE_DAY = helsinki_today()
+        stored = _store_hours_cache(timetable)
         logger.info("Week cache refreshed at %s", _WEEK_CACHE_AT.isoformat())
+        logger.info("Warm cache stored %d timetable entries", stored)
         return True
 
     logger.warning("Week refresh returned suspicious data; cache not updated")
@@ -242,9 +259,9 @@ async def auki(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _send_hours_for_date(update: Update, target: date) -> None:
     _ensure_cache_day()
 
-    cached = _get_cached_hours_for_date(target)
+    cached, cache_source = _get_cached_hours_for_date(target)
     if cached is not None:
-        logger.info("Cache hit for date %s", target.isoformat())
+        logger.info("Cache hit for date %s from %s", target.isoformat(), cache_source)
         _HOURS_CACHE[target] = cached
         text = format_hours_message(cached, target)
         await update.message.reply_text(text, parse_mode="Markdown")
@@ -258,7 +275,7 @@ async def _send_hours_for_date(update: Update, target: date) -> None:
         _HOURS_CACHE[target] = info
         text = format_hours_message(info, target)
         await msg.edit_text(text, parse_mode="Markdown")
-    except Exception as e:
+    except Exception:
         logger.exception("Scraper error")
         await msg.edit_text(
             "Tietojen haku epaonnistui.\n\n"
@@ -294,11 +311,12 @@ async def viikko(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         hours_list = _WEEK_CACHE if refreshed and _WEEK_CACHE is not None else None
         if hours_list is None:
             async with AlkoScraper() as scraper:
-                hours_list = await scraper.get_week_hours()
+                timetable = await scraper.get_week_timetable()
+                hours_list = scraper.week_hours_from_timetable(timetable)
 
         text = format_week_message(hours_list)
         await msg.edit_text(text, parse_mode="Markdown")
-    except Exception as e:
+    except Exception:
         logger.exception("Scraper error")
         await msg.edit_text(
             "Tietojen haku epaonnistui.\n\n"
